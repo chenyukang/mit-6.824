@@ -1,3 +1,4 @@
 pkg/
 api.key
+*-out-*
 *-handin.tar.gz
