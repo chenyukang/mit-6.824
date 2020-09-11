@@ -2,6 +2,8 @@ package mr
 
 import "fmt"
 import "log"
+import "math/rand"
+import "time"
 import "net/rpc"
 import "hash/fnv"
 
@@ -23,16 +25,25 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+var letterRunes = []rune("abcdefghijklmnopqrstuvwxyz")
+
+func RandWorkerName(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
 //
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	rand.Seed(time.Now().UnixNano())
 
-	// uncomment to send the Example RPC to the master.
-	CallExample()
+	TryGetJob()
 
 }
 
@@ -41,13 +52,10 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func CallExample() {
+func TryGetJob() {
 
 	// declare an argument structure.
-	args := MrArgs{}
-
-	// fill in the argument(s).
-	args.X = 98
+	args := MrArgs{RandWorkerName(4)}
 
 	// declare a reply structure.
 	reply := MrReply{}
@@ -55,8 +63,7 @@ func CallExample() {
 	// send the RPC request, wait for the reply.
 	call("Master.DispatchJob", &args, &reply)
 
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+	fmt.Printf("got file_name: %v\n", reply.FILE_NAME)
 }
 
 //

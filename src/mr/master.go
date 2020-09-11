@@ -27,7 +27,8 @@ type Master struct {
 // the RPC argument and reply types are defined in rpc.go.
 //
 func (m *Master) DispatchJob(args *MrArgs, reply *MrReply) error {
-	reply.Y = args.X + 1
+	fmt.Fprintf(os.Stderr, "Got worker: %v\n", args.WORKER_NAME)
+	reply.FILE_NAME = "hello world"
 	return nil
 }
 
