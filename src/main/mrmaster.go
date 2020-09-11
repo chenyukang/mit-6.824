@@ -22,7 +22,7 @@ func main() {
 
 	m := mr.MakeMaster(os.Args[1:], 10)
 	for m.Done() == false {
-		fmt.Fprintf(os.Stderr, "checking ....\n")
+		//fmt.Fprintf(os.Stderr, "checking ....\n")
 		time.Sleep(time.Second)
 	}
 
