@@ -63,6 +63,7 @@ func TryGetJob() {
 	call("Master.DispatchJob", &args, &reply)
 
 	fmt.Printf("got file_name: %v\n", reply.FILE_NAME)
+	fmt.Printf("got job_type: %v\n", reply.JOB_TYPE)
 }
 
 //

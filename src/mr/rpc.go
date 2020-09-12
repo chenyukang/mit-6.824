@@ -20,6 +20,7 @@ type MrArgs struct {
 
 type MrReply struct {
 	FILE_NAME string
+	JOB_TYPE  string
 }
 
 // Add your RPC definitions here.

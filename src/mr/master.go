@@ -5,21 +5,23 @@ import "net"
 import "os"
 import "fmt"
 import "time"
+import "sync"
 import "net/rpc"
 import "net/http"
 
 type JobInfo struct {
-	status       string
-	started_time time.Time
+	status    string
+	startTime time.Time
 }
 
 type Master struct {
 	// Your definitions here.
-	nReduce              int
-	file_status          map[string]bool
-	mapJobs              map[string]JobInfo
-	reduceJobs           map[int]JobInfo
-	finished_files_count int
+	mu            sync.Mutex
+	nReduce       int
+	fileStats     map[string]string
+	mapJobs       map[string]JobInfo
+	reduceJobs    map[int]JobInfo
+	finishedCount int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -30,8 +32,20 @@ type Master struct {
 // the RPC argument and reply types are defined in rpc.go.
 //
 func (m *Master) DispatchJob(args *MrArgs, reply *MrReply) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	fmt.Fprintf(os.Stderr, "Got worker: %v\n", args.WORKER_NAME)
-	reply.FILE_NAME = "hello world"
+	for file, status := range m.fileStats {
+		if status == "pending" {
+			reply.FILE_NAME = file
+			reply.JOB_TYPE = "map"
+			m.fileStats[file] = "mapping"
+			m.mapJobs[file] = JobInfo{"running", time.Now()}
+			return nil
+		}
+	}
+
 	return nil
 }
 
@@ -56,14 +70,14 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	fmt.Fprintf(os.Stderr, "Jobs count: %v\n", len(m.file_status))
-	if len(m.file_status) == 0 {
+	fmt.Fprintf(os.Stderr, "Jobs count: %v\n", len(m.fileStats))
+	if len(m.fileStats) == 0 {
 		fmt.Fprintf(os.Stderr, "Don't have jobs\n")
 		return false
 	}
 
 	// Your code here.
-	if len(m.file_status) == m.finished_files_count {
+	if len(m.fileStats) == m.finishedCount {
 		return true
 	}
 	return false
@@ -76,7 +90,7 @@ func (m *Master) Done() bool {
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
-	m.file_status = make(map[string]bool)
+	m.fileStats = make(map[string]string)
 	for _, filename := range files {
 		fmt.Fprintf(os.Stderr, "open file: %v\n", filename)
 		file, err := os.Open(filename)
@@ -84,11 +98,11 @@ func MakeMaster(files []string, nReduce int) *Master {
 			log.Fatalf("cannot open %v", filename)
 		}
 		file.Close()
-		m.file_status[filename] = false
+		m.fileStats[filename] = "pending"
 	}
 	m.mapJobs = make(map[string]JobInfo)
 	m.reduceJobs = make(map[int]JobInfo)
-	m.finished_files_count = 0
+	m.finishedCount = 0
 	m.server()
 	return &m
 }
