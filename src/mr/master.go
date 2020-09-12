@@ -15,8 +15,11 @@ type JobInfo struct {
 
 type Master struct {
 	// Your definitions here.
-	nReduce int
-	file_kv map[string]JobInfo
+	nReduce              int
+	file_status          map[string]bool
+	mapJobs              map[string]JobInfo
+	reduceJobs           map[int]JobInfo
+	finished_files_count int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -53,21 +56,17 @@ func (m *Master) server() {
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	ret := false
-
-	if len(m.file_kv) == 0 {
+	fmt.Fprintf(os.Stderr, "Jobs count: %v\n", len(m.file_status))
+	if len(m.file_status) == 0 {
 		fmt.Fprintf(os.Stderr, "Don't have jobs\n")
 		return false
 	}
 
 	// Your code here.
-	for _, job := range m.file_kv {
-		if job.status != "finished" {
-			return ret
-		}
-
+	if len(m.file_status) == m.finished_files_count {
+		return true
 	}
-	return true
+	return false
 }
 
 // create a Master.
@@ -77,7 +76,7 @@ func (m *Master) Done() bool {
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
 
-	m.file_kv = make(map[string]JobInfo)
+	m.file_status = make(map[string]bool)
 	for _, filename := range files {
 		fmt.Fprintf(os.Stderr, "open file: %v\n", filename)
 		file, err := os.Open(filename)
@@ -85,8 +84,11 @@ func MakeMaster(files []string, nReduce int) *Master {
 			log.Fatalf("cannot open %v", filename)
 		}
 		file.Close()
-		m.file_kv[filename] = JobInfo{"pending", time.Now()}
+		m.file_status[filename] = false
 	}
+	m.mapJobs = make(map[string]JobInfo)
+	m.reduceJobs = make(map[int]JobInfo)
+	m.finished_files_count = 0
 	m.server()
 	return &m
 }

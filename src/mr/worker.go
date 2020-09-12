@@ -42,7 +42,6 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	rand.Seed(time.Now().UnixNano())
-
 	TryGetJob()
 
 }
