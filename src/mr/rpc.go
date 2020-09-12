@@ -15,12 +15,16 @@ import "strconv"
 //
 
 type MrArgs struct {
-	WORKER_NAME string
+	NAME      string
+	JOB_TYPE  string
+	JOB_INDEX int
 }
 
 type MrReply struct {
-	FILE_NAME string
-	JOB_TYPE  string
+	FILE_NAME    string
+	JOB_TYPE     string
+	JOB_INDEX    int
+	REDUCE_COUNT int
 }
 
 // Add your RPC definitions here.
