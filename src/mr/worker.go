@@ -6,6 +6,7 @@ import "math/rand"
 import "time"
 import "net/rpc"
 import "hash/fnv"
+import "io/ioutil"
 
 //
 // Map functions return a slice of KeyValue.
@@ -42,7 +43,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
 	rand.Seed(time.Now().UnixNano())
-	TryGetJob()
+	TryGetJob(mapf, reducef)
 
 }
 
@@ -51,7 +52,8 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func TryGetJob() {
+func TryGetJob(mapf func(string, string) []KeyValue,
+	reducef func(string, []string) string) {
 
 	// declare an argument structure.
 	args := MrArgs{RandWorkerName(4)}
@@ -64,6 +66,31 @@ func TryGetJob() {
 
 	fmt.Printf("got file_name: %v\n", reply.FILE_NAME)
 	fmt.Printf("got job_type: %v\n", reply.JOB_TYPE)
+	switch reply.JOB_TYPE {
+	case "map":
+		runMap(mapf, reply.FILE_NAME)
+	case "reduce":
+		runReduce(reducef, reply.FILE_NAME)
+	}
+
+}
+
+func runMap(mapf func(string, string) []KeyValue, filename string) {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content))
+	fmt.Printf("kva len: %v\n", len(kva))
+}
+
+func runReduce(reducef func(string, []string) string, filename string) {
+
 }
 
 //
