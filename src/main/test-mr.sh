@@ -156,6 +156,7 @@ wait ; wait
 ../mrsequential ../../mrapps/nocrash.so ../pg*txt || exit 1
 sort mr-out-0 > mr-correct-crash.txt
 rm -f mr-out*
+rm -f mr-*-*.map
 
 echo '***' Starting crash test.
 
@@ -181,11 +182,11 @@ SOCKNAME=/var/tmp/824-mr-`id -u`
     sleep 1
   done ) &
 
-while [ -e $SOCKNAME -a ! -f mr-done ]
+(while [ -e $SOCKNAME -a ! -f mr-done ]
 do
   timeout -k 2s 180s ../mrworker ../../mrapps/crash.so
   sleep 1
-done
+done)
 
 wait
 wait

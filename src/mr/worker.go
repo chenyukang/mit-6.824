@@ -65,7 +65,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		if !more {
 			break
 		} else {
-			time.Sleep(time.Second)
+			//time.Sleep(time.Second)
 		}
 	}
 
@@ -88,15 +88,19 @@ func TryGetJob(mapf func(string, string) []KeyValue,
 	// send the RPC request, wait for the reply.
 	call("Master.DispatchJob", &args, &reply)
 
-	fmt.Printf("got file_name: %v\n", reply.FILE_NAME)
-	fmt.Printf("got job_type: %v\n", reply.JOB_TYPE)
-	fmt.Printf("got job_index: %v\n", reply.JOB_INDEX)
+	if os.Getenv("MR_DEBUG") == "YES" {
+		fmt.Printf("got file_name: %v\n", reply.FILE_NAME)
+		fmt.Printf("got job_type: %v\n", reply.JOB_TYPE)
+		fmt.Printf("got job_index: %v\n", reply.JOB_INDEX)
+	}
 	switch reply.JOB_TYPE {
 	case "map":
 		runMap(mapf, reply.FILE_NAME, reply.JOB_INDEX, reply.REDUCE_COUNT)
 		return true
 	case "reduce":
 		runReduce(reducef, reply.FILE_NAME, reply.JOB_INDEX)
+		return true
+	case "wait":
 		return true
 	}
 	// no more job
@@ -115,7 +119,7 @@ func runMap(mapf func(string, string) []KeyValue, filename string,
 	}
 	file.Close()
 	kva := mapf(filename, string(content))
-	fmt.Printf("kva len: %v\n", len(kva))
+	//fmt.Printf("kva len: %v\n", len(kva))
 
 	keyMap := make(map[int][]KeyValue)
 	for _, kv := range kva {
@@ -127,7 +131,7 @@ func runMap(mapf func(string, string) []KeyValue, filename string,
 	}
 
 	for k, v := range keyMap {
-		file, err := os.Create(fmt.Sprintf("mr-%v-%v", job_index, k))
+		file, err := os.Create(fmt.Sprintf("mr-%v-%v.map", job_index, k))
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -143,7 +147,7 @@ func runMap(mapf func(string, string) []KeyValue, filename string,
 }
 
 func runReduce(reducef func(string, []string) string, filename string, job_index int) {
-	pat := fmt.Sprintf("mr-*-%v", job_index)
+	pat := fmt.Sprintf("mr-*-%v.map", job_index)
 	matches, _ := filepath.Glob(pat)
 	intermediate := []KeyValue{}
 	for _, match := range matches {
@@ -164,8 +168,10 @@ func runReduce(reducef func(string, []string) string, filename string, job_index
 	}
 
 	sort.Sort(ByKey(intermediate))
-	fmt.Printf("reduce job %v has len %v of intermediates\n",
-		job_index, len(intermediate))
+	if os.Getenv("MR_DEBUG") == "YES" {
+		fmt.Printf("reduce job %v has len %v of intermediates\n",
+			job_index, len(intermediate))
+	}
 	i := 0
 	var sb strings.Builder
 	for i < len(intermediate) {

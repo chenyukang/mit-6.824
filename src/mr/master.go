@@ -16,14 +16,13 @@ type JobInfo struct {
 
 type Master struct {
 	// Your definitions here.
-	mu            sync.Mutex
-	nReduce       int
-	fileStats     map[string]string
-	mapJobs       map[string]JobInfo
-	reduceJobs    map[int]JobInfo
-	reduceCount   int
-	mapIndex      int
-	finishedCount int
+	mu          sync.Mutex
+	nReduce     int
+	fileStats   map[string]string
+	mapJobs     map[string]JobInfo
+	reduceJobs  map[int]JobInfo
+	reduceCount int
+	mapIndex    int
 }
 
 //
@@ -35,7 +34,10 @@ func (m *Master) DispatchJob(args *MrArgs, reply *MrReply) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "Got worker: %v\n", args.NAME)
+	if os.Getenv("MR_DEBUG") == "YES" {
+		fmt.Fprintf(os.Stderr, "Got worker: %v\n", args.NAME)
+	}
+	mapped_count := 0
 	for file, status := range m.fileStats {
 		if status == "pending" {
 			reply.FILE_NAME = file
@@ -46,16 +48,22 @@ func (m *Master) DispatchJob(args *MrArgs, reply *MrReply) error {
 			m.mapIndex += 1
 			m.mapJobs[file] = JobInfo{"running", time.Now()}
 			return nil
+		} else if status == "mapped" {
+			mapped_count += 1
 		}
 	}
-
-	for i := 0; i < m.nReduce; i++ {
-		if _, ok := m.reduceJobs[i]; !ok {
-			m.reduceJobs[i] = JobInfo{"running", time.Now()}
-			reply.JOB_TYPE = "reduce"
-			reply.JOB_INDEX = i
-			reply.REDUCE_COUNT = m.nReduce
-			return nil
+	if mapped_count < len(m.fileStats) {
+		reply.JOB_TYPE = "wait"
+		return nil
+	} else if mapped_count == len(m.fileStats) {
+		for i := 0; i < m.nReduce; i++ {
+			if _, ok := m.reduceJobs[i]; !ok {
+				m.reduceJobs[i] = JobInfo{"running", time.Now()}
+				reply.JOB_TYPE = "reduce"
+				reply.JOB_INDEX = i
+				reply.REDUCE_COUNT = m.nReduce
+				return nil
+			}
 		}
 	}
 	reply.JOB_TYPE = "no_job"
@@ -66,14 +74,14 @@ func (m *Master) FinishJob(args *MrArgs, reply *MrReply) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "Finished Worker: %v\n", args.NAME)
+	//fmt.Fprintf(os.Stderr, "Finished Worker: %v\n", args.NAME)
 	if args.JOB_TYPE == "map" {
 		filename := args.NAME
+		//job_index := args.JOB_INDEX
 		m.fileStats[filename] = "mapped"
 		delete(m.mapJobs, filename)
 	} else {
 		m.reduceJobs[args.JOB_INDEX] = JobInfo{"finished", time.Now()}
-		m.finishedCount += 1
 	}
 	return nil
 }
@@ -94,27 +102,75 @@ func (m *Master) server() {
 	go http.Serve(l, nil)
 }
 
+func (m *Master) CheckJobs(timeout int) {
+	for true {
+		m.mu.Lock()
+		clean_up := []string{}
+		for file, job_info := range m.mapJobs {
+			now := time.Now()
+			if job_info.status == "running" &&
+				now.Sub(job_info.startTime).Seconds() >= float64(timeout) {
+				fmt.Printf("dead job: %v\n", file)
+				m.fileStats[file] = "pending"
+				clean_up = append(clean_up, file)
+			}
+		}
+
+		for _, file := range clean_up {
+			delete(m.mapJobs, file)
+		}
+
+		clean_up_index := []int{}
+		for job_index, job_info := range m.reduceJobs {
+			now := time.Now()
+			if job_info.status == "running" &&
+				now.Sub(job_info.startTime).Seconds() >= float64(timeout) {
+				fmt.Printf("dead reduce: %v\n", job_index)
+				clean_up_index = append(clean_up_index, job_index)
+			}
+		}
+		for _, idx := range clean_up_index {
+			delete(m.reduceJobs, idx)
+		}
+		m.mu.Unlock()
+		time.Sleep(time.Second)
+	}
+
+}
+
 //
 // main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
 //
 func (m *Master) Done() bool {
-	fmt.Fprintf(os.Stderr,
-		"\n===============\nFile count: %v\nMap count: %v\nReduce count: %v\n",
-		len(m.fileStats),
-		len(m.mapJobs),
-		len(m.reduceJobs))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if os.Getenv("MR_DEBUG") == "YES" {
+		fmt.Fprintf(os.Stderr,
+			"\n===============\nFile count: %v\nMap count: %v\nReduce count: %v\n",
+			len(m.fileStats),
+			len(m.mapJobs),
+			len(m.reduceJobs))
+	}
 
 	if len(m.fileStats) == 0 {
 		fmt.Fprintf(os.Stderr, "Don't have jobs\n")
 		return false
 	}
 
-	// Your code here.
-	if len(m.fileStats) <= m.finishedCount {
-		return true
+	if len(m.reduceJobs) < m.nReduce {
+		return false
 	}
-	return false
+
+	for _, job_info := range m.reduceJobs {
+		if job_info.status != "finished" {
+			return false
+		}
+	}
+
+	fmt.Printf("ALL DONE!\n")
+	return true
 }
 
 // create a Master.
@@ -126,7 +182,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	m.fileStats = make(map[string]string)
 	for _, filename := range files {
-		fmt.Fprintf(os.Stderr, "open file: %v\n", filename)
+		//fmt.Fprintf(os.Stderr, "open file: %v\n", filename)
 		file, err := os.Open(filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
@@ -138,7 +194,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.reduceJobs = make(map[int]JobInfo)
 	m.nReduce = nReduce
 	m.mapIndex = 0
-	m.finishedCount = 0
+	go m.CheckJobs(10)
 	m.server()
 	return &m
 }
