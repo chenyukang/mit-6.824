@@ -37,7 +37,7 @@ func (m *Master) DispatchJob(args *MrArgs, reply *MrReply) error {
 	if os.Getenv("MR_DEBUG") == "YES" {
 		fmt.Fprintf(os.Stderr, "Got worker: %v\n", args.NAME)
 	}
-	mapped_count := 0
+	mappedCount := 0
 	for file, status := range m.fileStats {
 		if status == "pending" {
 			reply.FILE_NAME = file
@@ -45,17 +45,17 @@ func (m *Master) DispatchJob(args *MrArgs, reply *MrReply) error {
 			reply.JOB_INDEX = m.mapIndex
 			reply.REDUCE_COUNT = m.nReduce
 			m.fileStats[file] = "mapping"
-			m.mapIndex += 1
+			m.mapIndex++
 			m.mapJobs[file] = JobInfo{"running", time.Now()}
 			return nil
 		} else if status == "mapped" {
-			mapped_count += 1
+			mappedCount++
 		}
 	}
-	if mapped_count < len(m.fileStats) {
+	if mappedCount < len(m.fileStats) {
 		reply.JOB_TYPE = "wait"
 		return nil
-	} else if mapped_count == len(m.fileStats) {
+	} else if mappedCount == len(m.fileStats) {
 		for i := 0; i < m.nReduce; i++ {
 			if _, ok := m.reduceJobs[i]; !ok {
 				m.reduceJobs[i] = JobInfo{"running", time.Now()}
@@ -105,31 +105,31 @@ func (m *Master) server() {
 func (m *Master) CheckJobs(timeout int) {
 	for true {
 		m.mu.Lock()
-		clean_up := []string{}
-		for file, job_info := range m.mapJobs {
+		cleanUp := []string{}
+		for file, jobInfo := range m.mapJobs {
 			now := time.Now()
-			if job_info.status == "running" &&
-				now.Sub(job_info.startTime).Seconds() >= float64(timeout) {
+			if jobInfo.status == "running" &&
+				now.Sub(jobInfo.startTime).Seconds() >= float64(timeout) {
 				fmt.Printf("dead job: %v\n", file)
 				m.fileStats[file] = "pending"
-				clean_up = append(clean_up, file)
+				cleanUp = append(cleanUp, file)
 			}
 		}
 
-		for _, file := range clean_up {
+		for _, file := range cleanUp {
 			delete(m.mapJobs, file)
 		}
 
-		clean_up_index := []int{}
-		for job_index, job_info := range m.reduceJobs {
+		cleanUpIndex := []int{}
+		for jobIndex, jobInfo := range m.reduceJobs {
 			now := time.Now()
-			if job_info.status == "running" &&
-				now.Sub(job_info.startTime).Seconds() >= float64(timeout) {
-				fmt.Printf("dead reduce: %v\n", job_index)
-				clean_up_index = append(clean_up_index, job_index)
+			if jobInfo.status == "running" &&
+				now.Sub(jobInfo.startTime).Seconds() >= float64(timeout) {
+				fmt.Printf("dead reduce: %v\n", jobIndex)
+				cleanUpIndex = append(cleanUpIndex, jobIndex)
 			}
 		}
-		for _, idx := range clean_up_index {
+		for _, idx := range cleanUpIndex {
 			delete(m.reduceJobs, idx)
 		}
 		m.mu.Unlock()
@@ -163,8 +163,8 @@ func (m *Master) Done() bool {
 		return false
 	}
 
-	for _, job_info := range m.reduceJobs {
-		if job_info.status != "finished" {
+	for _, jobInfo := range m.reduceJobs {
+		if jobInfo.status != "finished" {
 			return false
 		}
 	}
