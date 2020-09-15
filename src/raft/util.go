@@ -1,13 +1,22 @@
 package raft
 
 import "log"
+import "os"
 
 // Debugging
-const Debug = 0
+//const Debug = 0
 
+/* print debug message according to environment variable */
 func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug > 0 {
+	if os.Getenv("GO_DEBUG") == "1" {
 		log.Printf(format, a...)
 	}
 	return
+}
+
+func MaxInt(x, y int) int {
+	if x < y {
+		return y
+	}
+	return x
 }

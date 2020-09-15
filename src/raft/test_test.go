@@ -59,7 +59,9 @@ func TestReElection2A(t *testing.T) {
 
 	leader1 := cfg.checkOneLeader()
 
+	//time.Sleep(20000 * time.Millisecond)
 	// if the leader disconnects, a new one should be elected.
+	DPrintf("disconnect: %v\n", leader1)
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
