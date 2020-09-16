@@ -349,6 +349,8 @@ func (rf *Raft) sendHeartBeat() {
 						}
 					}(id)
 				}
+			} else {
+				break
 			}
 		}
 	}()
@@ -414,6 +416,7 @@ func (rf *Raft) kickOffElection() {
 			DPrintf("%v@%v become LEADER ....\n", rf.me, rf.currentTerm)
 			rf.mu.Lock()
 			rf.meState = LEADER
+			rf.sendHeartBeat()
 			rf.mu.Unlock()
 			return
 		}
