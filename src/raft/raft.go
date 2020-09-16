@@ -156,7 +156,6 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	DPrintf("....Check Vote: voted:%v  args.Term:%v vote:%v? %v@%v", rf.votedFor, args.Term, args.CandidateID, rf.me, rf.currentTerm)
-
 	reply.VoteGranted = 0
 	reply.Term = MaxInt(args.Term, rf.currentTerm)
 
@@ -177,9 +176,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateID
 		DPrintf("%v@%v vote for %v\n", rf.me, args.Term, args.CandidateID)
 		rf.meState = FOLLOWER
-		rf.currentTerm = MaxInt(args.Term, rf.currentTerm)
 	}
+	rf.currentTerm = MaxInt(args.Term, rf.currentTerm)
 	rf.mu.Unlock()
+
 }
 
 type AppendEntriesArgs struct {
@@ -298,18 +298,19 @@ func (rf *Raft) checkStatus() {
 				break
 			}
 			//random time out
-			maxms := big.NewInt(100)
+			maxms := big.NewInt(60)
 			ms, _ := crand.Int(crand.Reader, maxms)
 			timeout := time.Duration(maxms.Int64()+ms.Int64()) * time.Millisecond
-			time.Sleep(timeout)
-			diff := time.Now().Sub(rf.lastContactTime)
-			//DPrintf("time: %v  timeout:%v %v\n", diff, timeout, diff > timeout)
-			rf.mu.Lock()
-			state := rf.meState
-			rf.mu.Unlock()
-			if state == FOLLOWER && diff >= timeout {
-				DPrintf("id(%v) with state(%v) start kickoff at term: %v\n", rf.me, rf.meState, rf.currentTerm)
-				rf.kickOffElection()
+			select {
+			case <-time.After(timeout):
+				diff := time.Now().Sub(rf.lastContactTime)
+				rf.mu.Lock()
+				state := rf.meState
+				rf.mu.Unlock()
+				if state == FOLLOWER && diff >= timeout {
+					DPrintf("id(%v) with state(%v) start kickoff at term: %v\n", rf.me, rf.meState, rf.currentTerm)
+					rf.kickOffElection()
+				}
 			}
 		}
 	}()
@@ -321,30 +322,31 @@ func (rf *Raft) sendHeartBeat() {
 			if rf.killed() {
 				break
 			}
-			time.Sleep(time.Duration(30 * time.Millisecond))
-			if rf.meState == LEADER {
-				//DPrintf("leader: %v term: %v heartbeat.....\n", rf.me, rf.currentTerm)
-				for id := range rf.peers {
-					if id != rf.me {
-						go func(id int) {
-							heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
-							heartReply := AppendEntriesReply{}
-							ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
-							// If RPC request or response contains term T > currentTerm:
-							// set currentTerm = T, convert to follower (§5.1)
-							if ok {
-								rf.mu.Lock()
-								if heartReply.Term > rf.currentTerm {
-									rf.currentTerm = heartReply.Term
-									rf.meState = FOLLOWER
+			timeout := time.Duration(30 * time.Millisecond)
+			select {
+			case <-time.After(timeout):
+				if rf.meState == LEADER {
+					//DPrintf("leader: %v term: %v heartbeat.....\n", rf.me, rf.currentTerm)
+					for id := range rf.peers {
+						if id != rf.me {
+							go func(id int) {
+								heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
+								heartReply := AppendEntriesReply{}
+								ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
+								// If RPC request or response contains term T > currentTerm:
+								// set currentTerm = T, convert to follower (§5.1)
+								if ok {
+									rf.mu.Lock()
+									if heartReply.Term > rf.currentTerm {
+										rf.currentTerm = heartReply.Term
+										rf.meState = FOLLOWER
+									}
+									rf.mu.Unlock()
 								}
-								rf.mu.Unlock()
-							}
-						}(id)
+							}(id)
+						}
 					}
 				}
-			} else {
-				break
 			}
 		}
 	}()
@@ -380,12 +382,13 @@ func (rf *Raft) kickOffElection() {
 						if voteReply.VoteGranted == 1 {
 							votes <- 1
 						} else {
+							rf.mu.Lock()
 							if voteReply.Term > rf.currentTerm {
-								rf.mu.Lock()
 								rf.currentTerm = voteReply.Term
 								rf.meState = FOLLOWER
-								rf.mu.Unlock()
+
 							}
+							rf.mu.Unlock()
 							votes <- 0
 						}
 					} else {
@@ -413,7 +416,6 @@ func (rf *Raft) kickOffElection() {
 			DPrintf("%v@%v become LEADER ....\n", rf.me, rf.currentTerm)
 			rf.mu.Lock()
 			rf.meState = LEADER
-			rf.sendHeartBeat()
 			rf.mu.Unlock()
 			return
 		}
@@ -457,6 +459,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.checkStatus()
-	//rf.sendHeartBeat()
+	rf.sendHeartBeat()
 	return rf
 }
