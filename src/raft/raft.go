@@ -77,7 +77,7 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
-	lastVotedTime time.Time
+	lastContactTime time.Time
 
 	// 'leader' 'candidate' 'follower'
 	meState int
@@ -158,27 +158,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	DPrintf("....Check Vote: voted:%v  args.Term:%v vote:%v? %v@%v", rf.votedFor, args.Term, args.CandidateID, rf.me, rf.currentTerm)
 
 	reply.VoteGranted = 0
+	reply.Term = MaxInt(args.Term, rf.currentTerm)
 
 	// Reject it when term is less current
 	if args.Term < rf.currentTerm {
-		reply.Term = MaxInt(args.Term, rf.currentTerm)
 		return
 	}
 
 	if args.Term == rf.currentTerm && rf.meState == LEADER {
 		return
 	}
+
 	rf.mu.Lock()
-	if rf.votedFor == -1 || args.Term > rf.currentTerm {
+	if rf.votedFor == -1 {
 		// If one server’s current term is smaller than the other’s,
 		// then it updates its current term to the larger value
 		reply.VoteGranted = 1
-
 		rf.votedFor = args.CandidateID
 		DPrintf("%v@%v vote for %v\n", rf.me, args.Term, args.CandidateID)
 		rf.meState = FOLLOWER
 		rf.currentTerm = MaxInt(args.Term, rf.currentTerm)
-		reply.Term = MaxInt(args.Term, rf.currentTerm)
 	}
 	rf.mu.Unlock()
 }
@@ -199,13 +198,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	rf.lastVotedTime = time.Now()
-	if args.Term > rf.currentTerm {
+	if args.Term > rf.currentTerm && rf.meState != FOLLOWER {
 		rf.meState = FOLLOWER
 		rf.currentTerm = args.Term
-
+		reply.Term = MaxInt(rf.currentTerm, args.Term)
+	} else {
+		rf.lastContactTime = time.Now()
 	}
-	reply.Term = MaxInt(rf.currentTerm, args.Term)
 }
 
 //
@@ -303,7 +302,7 @@ func (rf *Raft) checkStatus() {
 			ms, _ := crand.Int(crand.Reader, maxms)
 			timeout := time.Duration(maxms.Int64()+ms.Int64()) * time.Millisecond
 			time.Sleep(timeout)
-			diff := time.Now().Sub(rf.lastVotedTime)
+			diff := time.Now().Sub(rf.lastContactTime)
 			//DPrintf("time: %v  timeout:%v %v\n", diff, timeout, diff > timeout)
 			rf.mu.Lock()
 			state := rf.meState
@@ -364,12 +363,10 @@ func (rf *Raft) kickOffElection() {
 		rf.mu.Unlock()
 
 		votes := make(chan int, len(rf.peers)-1)
-
-		//go func() {
+		//Sleep for a while
 		ms := 100 + (rand.Int63() % 100)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-		//	votes <- -2
-		//}()
+		timeout := time.After(time.Duration(ms) * time.Millisecond)
+
 		for id, _ := range rf.peers {
 			if id != rf.me {
 				go func(id int) {
@@ -400,14 +397,16 @@ func (rf *Raft) kickOffElection() {
 
 		sended := 0
 		granted := 0
-		for i := 0; i < len(rf.peers)-1; i++ {
-			v := <-votes
+		select {
+		case v := <-votes:
 			if v == 1 || v == 0 {
 				sended++
 			}
 			if v == 1 {
 				granted++
 			}
+		case <-timeout:
+			DPrintf("timeout: %v@%v\n", rf.me, rf.currentTerm)
 		}
 		DPrintf("id: %v@%v granted:%v sended:%v\n", rf.me, rf.currentTerm, granted, sended)
 		if sended > 0 && (granted > sended/2) {
@@ -421,6 +420,7 @@ func (rf *Raft) kickOffElection() {
 		if rf.meState == FOLLOWER {
 			return
 		}
+
 	}
 }
 
@@ -447,7 +447,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.votedFor = -1
 	rf.commitIndex = 0
 	rf.lastApplied = 0
-	rf.lastVotedTime = time.Now()
+	rf.lastContactTime = time.Now()
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
