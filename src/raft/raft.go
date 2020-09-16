@@ -156,7 +156,8 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	DPrintf("....Check Vote: voted:%v  args.Term:%v vote:%v? %v@%v", rf.votedFor, args.Term, args.CandidateID, rf.me, rf.currentTerm)
+	DPrintf("....Check Vote: voted:%v  args.Term:%v vote:%v? %v@%v",
+		rf.votedFor, args.Term, args.CandidateID, rf.me, rf.currentTerm)
 
 	reply.VoteGranted = 0
 	reply.Term = MaxInt(args.Term, rf.currentTerm)
@@ -309,13 +310,12 @@ func (rf *Raft) checkStatus() {
 			//random time out
 			ms := 800 + rand.Intn(200)
 			timeout := time.Duration(ms) * time.Millisecond
-			select {
-			case <-time.After(timeout):
-				diff := time.Now().Sub(rf.lastContactTime)
-				if rf.meState != LEADER && diff >= timeout {
-					DPrintf("id(%v) with state(%v) start kickoff at term: %v\n", rf.me, rf.meState, rf.currentTerm)
-					rf.kickOffElection()
-				}
+			time.Sleep(timeout)
+			diff := time.Now().Sub(rf.lastContactTime)
+			if rf.meState != LEADER && diff >= timeout {
+				DPrintf("id(%v) with state(%v) start kickoff at term: %v\n",
+					rf.me, rf.meState, rf.currentTerm)
+				rf.kickOffElection()
 			}
 		}
 	}()
@@ -327,29 +327,27 @@ func (rf *Raft) sendHeartBeat() {
 			if rf.killed() {
 				break
 			}
-			timeout := time.Duration(5 * time.Millisecond)
-			select {
-			case <-time.After(timeout):
-				if rf.meState == LEADER {
-					//DPrintf("leader: %v term: %v heartbeat.....\n", rf.me, rf.currentTerm)
-					for id := range rf.peers {
-						if id != rf.me {
-							go func(id int) {
-								heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
-								heartReply := AppendEntriesReply{}
-								ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
-								// If RPC request or response contains term T > currentTerm:
-								// set currentTerm = T, convert to follower (§5.1)
-								if ok {
-									rf.mu.Lock()
-									if heartReply.Term > rf.currentTerm {
-										rf.TransToFollower(heartReply.Term)
-									}
-									rf.mu.Unlock()
-								}
-							}(id)
-						}
+			timeout := time.Duration(50 * time.Millisecond)
+			time.Sleep(timeout)
+			if rf.meState == LEADER {
+				for id := range rf.peers {
+					if id == rf.me {
+						continue
 					}
+					go func(id int) {
+						heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
+						heartReply := AppendEntriesReply{}
+						ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
+						// If RPC request or response contains term T > currentTerm:
+						// set currentTerm = T, convert to follower (§5.1)
+						if ok {
+							rf.mu.Lock()
+							if heartReply.Term > rf.currentTerm {
+								rf.TransToFollower(heartReply.Term)
+							}
+							rf.mu.Unlock()
+						}
+					}(id)
 				}
 			}
 		}
@@ -374,31 +372,28 @@ func (rf *Raft) kickOffElection() {
 		timeout := time.After(time.Duration(ms) * time.Millisecond)
 
 		for id, _ := range rf.peers {
-			if id != rf.me {
-				go func(id int) {
-					rf.mu.Lock()
-					voteArgs := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
-					rf.mu.Unlock()
-					voteReply := RequestVoteReply{}
-					ok := rf.sendRequestVote(id, &voteArgs, &voteReply)
-					if ok {
-						DPrintf("(%v@%v) %v => reply:%v\n", rf.me, rf.currentTerm, id, voteReply)
-						if voteReply.VoteGranted == 1 {
-							votes <- 1
-						} else {
-							rf.mu.Lock()
-							if voteReply.Term > rf.currentTerm {
-								rf.TransToFollower(voteReply.Term)
-
-							}
-							rf.mu.Unlock()
-							votes <- 0
-						}
-					} else {
-						votes <- -1
-					}
-				}(id)
+			if id == rf.me {
+				continue
 			}
+			go func(id int) {
+				voteArgs := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+				voteReply := RequestVoteReply{}
+				ok := rf.sendRequestVote(id, &voteArgs, &voteReply)
+				if ok {
+					DPrintf("(%v@%v) %v => reply:%v\n", rf.me, rf.currentTerm, id, voteReply)
+					if voteReply.VoteGranted == 1 {
+						votes <- 1
+					} else {
+						rf.mu.Lock()
+						if voteReply.Term > rf.currentTerm {
+							rf.TransToFollower(voteReply.Term)
+
+						}
+						rf.mu.Unlock()
+						votes <- 0
+					}
+				}
+			}(id)
 		}
 
 		sended := 0
