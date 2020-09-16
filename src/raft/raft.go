@@ -177,11 +177,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// If one server’s current term is smaller than the other’s,
 		// then it updates its current term to the larger value
 		reply.VoteGranted = 1
-		rf.votedFor = args.CandidateID
+		rf.TransToFollower(args.Term)
 		DPrintf("%v@%v vote for %v\n", rf.me, args.Term, args.CandidateID)
-		rf.meState = FOLLOWER
 	}
-	rf.currentTerm = MaxInt(args.Term, rf.currentTerm)
 	rf.mu.Unlock()
 
 }
