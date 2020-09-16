@@ -20,8 +20,9 @@ package raft
 import "sync"
 import "sync/atomic"
 import "../labrpc"
-import crand "crypto/rand"
-import "math/big"
+
+// import crand "crypto/rand"
+// import "math/big"
 import "time"
 import "math/rand"
 
@@ -156,6 +157,7 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	DPrintf("....Check Vote: voted:%v  args.Term:%v vote:%v? %v@%v", rf.votedFor, args.Term, args.CandidateID, rf.me, rf.currentTerm)
+
 	reply.VoteGranted = 0
 	reply.Term = MaxInt(args.Term, rf.currentTerm)
 
@@ -168,6 +170,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
+	// args.Term > rf.currentTerm
 	rf.mu.Lock()
 	if rf.votedFor == -1 {
 		// If one server’s current term is smaller than the other’s,
@@ -180,6 +183,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.currentTerm = MaxInt(args.Term, rf.currentTerm)
 	rf.mu.Unlock()
 
+}
+
+func (rf *Raft) TransToFollower(term int) {
+	rf.votedFor = -1
+	rf.meState = FOLLOWER
+	rf.lastContactTime = time.Now()
+	rf.currentTerm = term
 }
 
 type AppendEntriesArgs struct {
@@ -198,13 +208,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if args.Term > rf.currentTerm && rf.meState != FOLLOWER {
-		rf.meState = FOLLOWER
-		rf.currentTerm = args.Term
-		reply.Term = MaxInt(rf.currentTerm, args.Term)
-	} else {
-		rf.lastContactTime = time.Now()
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
 	}
+	reply.Term = rf.currentTerm
+	rf.TransToFollower(args.Term)
 }
 
 //
@@ -298,14 +307,12 @@ func (rf *Raft) checkStatus() {
 				break
 			}
 			//random time out
-			maxms := big.NewInt(100)
-			ms, _ := crand.Int(crand.Reader, maxms)
-			timeout := time.Duration(maxms.Int64()+ms.Int64()) * time.Millisecond
+			ms := 800 + rand.Intn(200)
+			timeout := time.Duration(ms) * time.Millisecond
 			select {
 			case <-time.After(timeout):
 				diff := time.Now().Sub(rf.lastContactTime)
-				state := rf.meState
-				if state == FOLLOWER && diff >= timeout {
+				if rf.meState != LEADER && diff >= timeout {
 					DPrintf("id(%v) with state(%v) start kickoff at term: %v\n", rf.me, rf.meState, rf.currentTerm)
 					rf.kickOffElection()
 				}
@@ -336,8 +343,7 @@ func (rf *Raft) sendHeartBeat() {
 								if ok {
 									rf.mu.Lock()
 									if heartReply.Term > rf.currentTerm {
-										rf.currentTerm = heartReply.Term
-										rf.meState = FOLLOWER
+										rf.TransToFollower(heartReply.Term)
 									}
 									rf.mu.Unlock()
 								}
@@ -382,8 +388,7 @@ func (rf *Raft) kickOffElection() {
 						} else {
 							rf.mu.Lock()
 							if voteReply.Term > rf.currentTerm {
-								rf.currentTerm = voteReply.Term
-								rf.meState = FOLLOWER
+								rf.TransToFollower(voteReply.Term)
 
 							}
 							rf.mu.Unlock()
