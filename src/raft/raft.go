@@ -304,9 +304,7 @@ func (rf *Raft) checkStatus() {
 			select {
 			case <-time.After(timeout):
 				diff := time.Now().Sub(rf.lastContactTime)
-				rf.mu.Lock()
 				state := rf.meState
-				rf.mu.Unlock()
 				if state == FOLLOWER && diff >= timeout {
 					DPrintf("id(%v) with state(%v) start kickoff at term: %v\n", rf.me, rf.meState, rf.currentTerm)
 					rf.kickOffElection()
