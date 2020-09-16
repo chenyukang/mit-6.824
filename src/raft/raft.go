@@ -23,6 +23,7 @@ import "../labrpc"
 import crand "crypto/rand"
 import "math/big"
 import "time"
+import "math/rand"
 
 // import "bytes"
 // import "../labgob"
@@ -44,13 +45,13 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
-// type RfState int
+type RfState int
 
-// const (
-// 	FOLLOWER = 1 + iota
-// 	CANDIDATE
-// 	LEADER
-// )
+const (
+	FOLLOWER = 1 + iota
+	CANDIDATE
+	LEADER
+)
 
 //
 // A Go object implementing a single Raft peer.
@@ -79,19 +80,14 @@ type Raft struct {
 	lastVotedTime time.Time
 
 	// 'leader' 'candidate' 'follower'
-	meState string
+	meState int
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	isLeader := rf.meState == "leader"
-	term := rf.currentTerm
-	return term, isLeader
+	return rf.currentTerm, rf.meState == LEADER
 }
 
 //
@@ -159,25 +155,32 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	DPrintf("        Check Vote: voted:%v  args.Term:%v rf.currentTerm:%v", rf.votedFor, args.Term, rf.currentTerm)
+	DPrintf("....Check Vote: voted:%v  args.Term:%v vote:%v? %v@%v", rf.votedFor, args.Term, args.CandidateID, rf.me, rf.currentTerm)
 
 	reply.VoteGranted = 0
+
+	// Reject it when term is less current
 	if args.Term < rf.currentTerm {
+		reply.Term = MaxInt(args.Term, rf.currentTerm)
 		return
 	}
 
-	if rf.votedFor == -1 {
-		//if one server’s current term is smaller than the other’s,
-		//then it updates its current term to the larger value
-		reply.VoteGranted = 1
-		rf.votedFor = args.CandidateID
-		DPrintf("on term: %v, %v vote for %v\n", args.Term, rf.me, args.CandidateID)
-		rf.meState = "follower"
-		rf.currentTerm = MaxInt(args.Term, rf.currentTerm)
+	if args.Term == rf.currentTerm && rf.meState == LEADER {
+		return
 	}
+	rf.mu.Lock()
+	if rf.votedFor == -1 || args.Term > rf.currentTerm {
+		// If one server’s current term is smaller than the other’s,
+		// then it updates its current term to the larger value
+		reply.VoteGranted = 1
+
+		rf.votedFor = args.CandidateID
+		DPrintf("%v@%v vote for %v\n", rf.me, args.Term, args.CandidateID)
+		rf.meState = FOLLOWER
+		rf.currentTerm = MaxInt(args.Term, rf.currentTerm)
+		reply.Term = MaxInt(args.Term, rf.currentTerm)
+	}
+	rf.mu.Unlock()
 }
 
 type AppendEntriesArgs struct {
@@ -198,8 +201,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.lastVotedTime = time.Now()
 	if args.Term > rf.currentTerm {
-		rf.meState = "follower"
+		rf.meState = FOLLOWER
 		rf.currentTerm = args.Term
+
 	}
 	reply.Term = MaxInt(rf.currentTerm, args.Term)
 }
@@ -291,16 +295,23 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) checkStatus() {
 	go func() {
 		for true {
-			time.Sleep(time.Duration(400 * time.Millisecond))
+			if rf.killed() {
+				break
+			}
+			//random time out
+			maxms := big.NewInt(100)
+			ms, _ := crand.Int(crand.Reader, maxms)
+			timeout := time.Duration(maxms.Int64()+ms.Int64()) * time.Millisecond
+			time.Sleep(timeout)
+			diff := time.Now().Sub(rf.lastVotedTime)
+			//DPrintf("time: %v  timeout:%v %v\n", diff, timeout, diff > timeout)
 			rf.mu.Lock()
-			mlastTime := rf.lastVotedTime
-			now := time.Now()
-			if rf.meState == "follower" && (now.Sub(mlastTime).Seconds() >= float64(2)) {
-				DPrintf("id(%v) start kickoff at term: %v\n", rf.me, rf.currentTerm)
+			state := rf.meState
+			rf.mu.Unlock()
+			if state == FOLLOWER && diff >= timeout {
+				DPrintf("id(%v) with state(%v) start kickoff at term: %v\n", rf.me, rf.meState, rf.currentTerm)
 				rf.kickOffElection()
 			}
-			rf.mu.Unlock()
-
 		}
 	}()
 }
@@ -308,24 +319,29 @@ func (rf *Raft) checkStatus() {
 func (rf *Raft) sendHeartBeat() {
 	go func() {
 		for true {
-			time.Sleep(time.Duration(20 * time.Millisecond))
-			if rf.meState == "leader" {
+			if rf.killed() {
+				break
+			}
+			time.Sleep(time.Duration(30 * time.Millisecond))
+			if rf.meState == LEADER {
 				//DPrintf("leader: %v term: %v heartbeat.....\n", rf.me, rf.currentTerm)
 				for id := range rf.peers {
 					if id != rf.me {
-						heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
-						heartReply := AppendEntriesReply{}
-						ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
-						// If RPC request or response contains term T > currentTerm:
-						// set currentTerm = T, convert to follower (§5.1)
-						if ok {
-							rf.mu.Lock()
-							if heartReply.Term > rf.currentTerm {
-								rf.currentTerm = heartReply.Term
-								rf.meState = "follower"
+						go func(id int) {
+							heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
+							heartReply := AppendEntriesReply{}
+							ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
+							// If RPC request or response contains term T > currentTerm:
+							// set currentTerm = T, convert to follower (§5.1)
+							if ok {
+								rf.mu.Lock()
+								if heartReply.Term > rf.currentTerm {
+									rf.currentTerm = heartReply.Term
+									rf.meState = FOLLOWER
+								}
+								rf.mu.Unlock()
 							}
-							rf.mu.Unlock()
-						}
+						}(id)
 					}
 				}
 			} else {
@@ -336,49 +352,76 @@ func (rf *Raft) sendHeartBeat() {
 }
 
 func (rf *Raft) kickOffElection() {
-	go func() {
-		for true {
-			rf.meState = "candidate"
-			rf.votedFor = -1
-			rf.currentTerm++
-			granted := 0
-			sended := 0
-			for id := range rf.peers {
-				if id != rf.me {
-					voteArgs := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
-					voteReply := RequestVoteReply{}
+	for true {
+		if rf.killed() {
+			break
+		}
 
+		rf.mu.Lock()
+		rf.meState = CANDIDATE
+		rf.votedFor = -1
+		rf.currentTerm++
+		rf.mu.Unlock()
+
+		votes := make(chan int, len(rf.peers)-1)
+
+		//go func() {
+		ms := 100 + (rand.Int63() % 100)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		//	votes <- -2
+		//}()
+		for id, _ := range rf.peers {
+			if id != rf.me {
+				go func(id int) {
+					rf.mu.Lock()
+					voteArgs := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+					rf.mu.Unlock()
+					voteReply := RequestVoteReply{}
 					ok := rf.sendRequestVote(id, &voteArgs, &voteReply)
 					if ok {
-						sended++
-						DPrintf("(%v)=> id:%v term:%v reply:%v\n", rf.me, id, rf.currentTerm, voteReply)
+						DPrintf("(%v@%v) %v => reply:%v\n", rf.me, rf.currentTerm, id, voteReply)
 						if voteReply.VoteGranted == 1 {
-							granted++
-						} else if voteReply.Term > rf.currentTerm {
-							rf.currentTerm = voteReply.Term
-							rf.meState = "follower"
-							return
+							votes <- 1
+						} else {
+							if voteReply.Term > rf.currentTerm {
+								rf.mu.Lock()
+								rf.currentTerm = voteReply.Term
+								rf.meState = FOLLOWER
+								rf.mu.Unlock()
+							}
+							votes <- 0
 						}
+					} else {
+						votes <- -1
 					}
-				}
-			}
-			if sended > 0 {
-				DPrintf("id: %v@%v granted:%v sended:%v\n", rf.me, rf.currentTerm, granted, sended)
-			}
-			if sended > 0 && (granted > sended/2) {
-				rf.meState = "leader"
-				rf.sendHeartBeat()
-				break
-			} else {
-				maxms := big.NewInt(400)
-				ms, _ := crand.Int(crand.Reader, maxms)
-				time.Sleep(time.Duration(ms.Int64()) * time.Millisecond)
-				if rf.meState == "follower" {
-					break
-				}
+				}(id)
 			}
 		}
-	}()
+
+		sended := 0
+		granted := 0
+		for i := 0; i < len(rf.peers)-1; i++ {
+			v := <-votes
+			if v == 1 || v == 0 {
+				sended++
+			}
+			if v == 1 {
+				granted++
+			}
+		}
+		DPrintf("id: %v@%v granted:%v sended:%v\n", rf.me, rf.currentTerm, granted, sended)
+		if sended > 0 && (granted > sended/2) {
+			DPrintf("%v@%v become LEADER ....\n", rf.me, rf.currentTerm)
+			rf.mu.Lock()
+			rf.meState = LEADER
+			rf.sendHeartBeat()
+			rf.mu.Unlock()
+			return
+		}
+		if rf.meState == FOLLOWER {
+			return
+		}
+	}
 }
 
 //
@@ -410,7 +453,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(rf.peers))
 
 	//When servers start up, they begin as followers
-	rf.meState = "follower"
+	rf.meState = FOLLOWER
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.checkStatus()
