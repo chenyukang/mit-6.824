@@ -298,7 +298,7 @@ func (rf *Raft) checkStatus() {
 				break
 			}
 			//random time out
-			maxms := big.NewInt(60)
+			maxms := big.NewInt(100)
 			ms, _ := crand.Int(crand.Reader, maxms)
 			timeout := time.Duration(maxms.Int64()+ms.Int64()) * time.Millisecond
 			select {
@@ -320,7 +320,7 @@ func (rf *Raft) sendHeartBeat() {
 			if rf.killed() {
 				break
 			}
-			timeout := time.Duration(30 * time.Millisecond)
+			timeout := time.Duration(5 * time.Millisecond)
 			select {
 			case <-time.After(timeout):
 				if rf.meState == LEADER {
@@ -364,7 +364,7 @@ func (rf *Raft) kickOffElection() {
 
 		votes := make(chan int, len(rf.peers)-1)
 		//Sleep for a while
-		ms := 100 + (rand.Int63() % 100)
+		ms := 150 + (rand.Int63() % 100)
 		timeout := time.After(time.Duration(ms) * time.Millisecond)
 
 		for id, _ := range rf.peers {
