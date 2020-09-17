@@ -168,8 +168,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		return
 	}
-	// args.Term > rf.currentTerm
-
+	// args.Term >= rf.currentTerm
 	if rf.votedFor == -1 {
 		// If one server’s current term is smaller than the other’s,
 		// then it updates its current term to the larger value
