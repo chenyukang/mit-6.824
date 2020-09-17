@@ -46,8 +46,6 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
-type RfState int
-
 const (
 	FOLLOWER = 1 + iota
 	CANDIDATE
