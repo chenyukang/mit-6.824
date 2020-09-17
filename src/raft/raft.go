@@ -322,33 +322,31 @@ func (rf *Raft) checkStatus() {
 func (rf *Raft) sendHeartBeat() {
 	go func() {
 		for true {
-			if rf.killed() {
-				break
-			}
 			timeout := time.Duration(50 * time.Millisecond)
 			time.Sleep(timeout)
-			if rf.meState == LEADER {
-				for id := range rf.peers {
-					if id == rf.me {
-						continue
-					}
-					go func(id int) {
-						heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
-						heartReply := AppendEntriesReply{}
-						ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
-						// If RPC request or response contains term T > currentTerm:
-						// set currentTerm = T, convert to follower (§5.1)
-						if ok {
-							rf.mu.Lock()
-							if heartReply.Term > rf.currentTerm {
-								rf.TransToFollower(heartReply.Term)
-							}
-							rf.mu.Unlock()
-						}
-					}(id)
-				}
-			} else {
+
+			if rf.killed() || rf.meState != LEADER {
 				break
+			}
+
+			for id := range rf.peers {
+				if id == rf.me {
+					continue
+				}
+				go func(id int) {
+					heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
+					heartReply := AppendEntriesReply{}
+					ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
+					// If RPC request or response contains term T > currentTerm:
+					// set currentTerm = T, convert to follower (§5.1)
+					if ok {
+						rf.mu.Lock()
+						if heartReply.Term > rf.currentTerm {
+							rf.TransToFollower(heartReply.Term)
+						}
+						rf.mu.Unlock()
+					}
+				}(id)
 			}
 		}
 	}()
