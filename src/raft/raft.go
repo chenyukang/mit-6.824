@@ -390,9 +390,7 @@ func (rf *Raft) kickOffElection() {
 		granted := 0
 		select {
 		case v := <-votes:
-			if v == 1 || v == 0 {
-				sended++
-			}
+			sended++
 			if v == 1 {
 				granted++
 			}
