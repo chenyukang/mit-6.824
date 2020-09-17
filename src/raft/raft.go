@@ -158,6 +158,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	DPrintf("....Check Vote: voted:%v  args.Term:%v vote:%v? %v@%v",
 		rf.votedFor, args.Term, args.CandidateID, rf.me, rf.currentTerm)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	reply.VoteGranted = 0
 	reply.Term = MaxInt(args.Term, rf.currentTerm)
@@ -166,13 +168,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term < rf.currentTerm {
 		return
 	}
-
-	if args.Term == rf.currentTerm && rf.meState == LEADER {
-		return
-	}
-
 	// args.Term > rf.currentTerm
-	rf.mu.Lock()
+
 	if rf.votedFor == -1 {
 		// If one server’s current term is smaller than the other’s,
 		// then it updates its current term to the larger value
@@ -180,7 +177,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.TransToFollower(args.Term)
 		DPrintf("%v@%v vote for %v\n", rf.me, args.Term, args.CandidateID)
 	}
-	rf.mu.Unlock()
 
 }
 
@@ -385,7 +381,6 @@ func (rf *Raft) kickOffElection() {
 						rf.mu.Lock()
 						if voteReply.Term > rf.currentTerm {
 							rf.TransToFollower(voteReply.Term)
-
 						}
 						rf.mu.Unlock()
 						votes <- 0
