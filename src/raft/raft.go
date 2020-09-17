@@ -80,6 +80,7 @@ type Raft struct {
 
 	// 'leader' 'candidate' 'follower'
 	meState int
+	applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -191,7 +192,7 @@ type AppendEntriesArgs struct {
 
 type AppendEntriesReply struct {
 	Term    int
-	Success int
+	Success bool
 }
 
 // Invoked by leader to replicate log entries
@@ -262,13 +263,53 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
 	// Your code here (2B).
-
-	return index, term, isLeader
+	rf.mu.Lock()
+	isLeader := rf.meState == LEADER
+	term := rf.currentTerm
+	index := rf.commitIndex
+	rf.mu.Unlock()
+	if isLeader {
+		number := len(rf.peers) - 1
+		results := make(chan int, number)
+		for id := range rf.peers {
+			if id == rf.me {
+				continue
+			}
+			go func(id int) {
+				logArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
+				logReply := AppendEntriesReply{}
+				ok := rf.sendAppendEntries(id, &logArgs, &logReply)
+				// If RPC request or response contains term T > currentTerm:
+				// set currentTerm = T, convert to follower (§5.1)
+				if ok && logReply.Success {
+					if logReply.Term > rf.currentTerm {
+						rf.TransToFollower(logReply.Term)
+					}
+					results <- 1
+				} else {
+					results <- 0
+				}
+			}(id)
+		}
+		agreed := 0
+		for i := 0; i < number; i++ {
+			v := <-results
+			if v == 1 {
+				agreed++
+			}
+		}
+		if agreed > (number / 2) {
+			rf.mu.Lock()
+			rf.commitIndex++
+			rf.mu.Unlock()
+			return rf.commitIndex, rf.currentTerm, true
+		} else {
+			return rf.commitIndex, rf.currentTerm, false
+		}
+	} else {
+		return index, term, isLeader
+	}
 }
 
 //
@@ -362,7 +403,7 @@ func (rf *Raft) kickOffElection() {
 		ms := 150 + (rand.Int63() % 100)
 		timeout := time.After(time.Duration(ms) * time.Millisecond)
 
-		for id, _ := range rf.peers {
+		for id := range rf.peers {
 			if id == rf.me {
 				continue
 			}
@@ -440,6 +481,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+
+	rf.applyCh = applyCh
 
 	//When servers start up, they begin as followers
 	rf.meState = FOLLOWER

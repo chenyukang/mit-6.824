@@ -61,7 +61,6 @@ func TestReElection2A(t *testing.T) {
 
 	//time.Sleep(20000 * time.Millisecond)
 	// if the leader disconnects, a new one should be elected.
-	DPrintf("disconnect: %v\n", leader1)
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
@@ -75,8 +74,7 @@ func TestReElection2A(t *testing.T) {
 	cfg.disconnect(leader2)
 	peer2 := (leader2 + 1) % servers
 	cfg.disconnect(peer2)
-	DPrintf("disconnect: %v\n", leader2)
-	DPrintf("disconnect: %v\n", peer2)
+
 	time.Sleep(2 * RaftElectionTimeout)
 	cfg.checkNoLeader()
 
