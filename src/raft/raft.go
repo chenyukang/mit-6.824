@@ -156,6 +156,20 @@ type RequestVoteReply struct {
 	VoteGranted int
 }
 
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	LeaderCommit int
+	Entries      []LogEntry
+}
+
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
 //
 // example RequestVote RPC handler.
 //
@@ -195,8 +209,9 @@ func (rf *Raft) TransToFollower(term int) {
 func (rf *Raft) TransToLeader() {
 	rf.mu.Lock()
 	rf.meState = LEADER
+	lastLogEntry := rf.GetLastLogEntry()
 	for id := range rf.nextIndex {
-		rf.nextIndex[id] = rf.LastLogIndex() + 1
+		rf.nextIndex[id] = lastLogEntry.Index + 1
 	}
 	for id := range rf.matchIndex {
 		rf.matchIndex[id] = 0
@@ -209,26 +224,12 @@ func (rf *Raft) GetLastLogEntry() LogEntry {
 	return rf.logs[len(rf.logs)-1]
 }
 
+func (rf *Raft) GetLogEntry(i int) LogEntry {
+	return rf.logs[i]
+}
+
 func (rf *Raft) LastLogIndex() int {
-	if len(rf.logs) >= 1 {
-		return rf.logs[len(rf.logs)-1].Index
-	} else {
-		return -1
-	}
-}
-
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderID     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	LeaderCommit int
-	Entries      []LogEntry
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	return rf.logs[len(rf.logs)-1].Index
 }
 
 // Invoked by leader to replicate log entries
@@ -237,12 +238,56 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	reply.Term = rf.currentTerm
+	reply.Success = false
 	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
 		return
 	}
-	reply.Term = rf.currentTerm
+
 	rf.TransToFollower(args.Term)
+
+	if rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
+		logEntry := rf.logs[rf.lastApplied]
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			Command:      logEntry.Command,
+			CommandIndex: logEntry.Index,
+		}
+		rf.applyCh <- applyMsg
+	}
+
+	// Reply false if log doesn’t contain an entry at prevLogIndex
+	// whose term matches prevLogTerm (§5.3)
+
+	if len(rf.logs) <= args.PrevLogIndex {
+		return
+	}
+
+	// If an existing entry conflicts with a new one
+	// (same index but different terms), delete the existing entry
+	// and all that follow it (§5.3)
+	prevLog := rf.GetLogEntry(args.PrevLogIndex)
+	if prevLog.Index != args.PrevLogIndex || prevLog.Term != args.PrevLogTerm {
+		return
+	}
+	pos1 := args.PrevLogIndex + 1
+	pos2 := 0
+	for pos1 < len(rf.logs) && pos2 < len(args.Entries) {
+		if rf.logs[pos1].Index == args.Entries[pos2].Index &&
+			rf.logs[pos1].Term == args.Entries[pos2].Term {
+			pos1++
+			pos2++
+		} else {
+			break
+		}
+	}
+	rf.logs = append(rf.logs[:pos1], args.Entries[pos2:]...)
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = MinInt(args.LeaderCommit, rf.LastLogIndex())
+	}
+
+	reply.Success = true
 }
 
 //
@@ -308,13 +353,22 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		number := len(rf.peers) - 1
 		results := make(chan int, number)
+		//log := LogEntry{rf.currentTerm, rf.LastLogIndex() + 1, command}
+		//rf.logs = append(rf.logs, log)
 		for id := range rf.peers {
 			if id == rf.me {
 				continue
 			}
 			go func(id int) {
-				logArgs := AppendEntriesArgs{rf.currentTerm, rf.me, 0, 0, 0, make([]LogEntry, 0)}
+				prevLogIndex := rf.GetLastLogEntry().Index
+				prevLogTerm := rf.GetLastLogEntry().Term
+				entries := make([]LogEntry, 0)
+
+				entries = append(entries, LogEntry{prevLogIndex + 1, rf.currentTerm, command})
+				logArgs := AppendEntriesArgs{rf.currentTerm, rf.me,
+					prevLogIndex, prevLogTerm, rf.commitIndex, entries}
 				logReply := AppendEntriesReply{}
+
 				ok := rf.sendAppendEntries(id, &logArgs, &logReply)
 				// If RPC request or response contains term T > currentTerm:
 				// set currentTerm = T, convert to follower (§5.1)
@@ -399,13 +453,21 @@ func (rf *Raft) sendHeartBeat() {
 
 			timeout := time.Duration(50 * time.Millisecond)
 			time.Sleep(timeout)
+
+			lastLogEntry := rf.GetLastLogEntry()
+			heartArgs := AppendEntriesArgs{
+				rf.currentTerm,
+				rf.me,
+				lastLogEntry.Index,
+				lastLogEntry.Term,
+				rf.commitIndex,
+				[]LogEntry{}}
+
 			for id := range rf.peers {
 				if id == rf.me {
 					continue
 				}
 				go func(id int) {
-					heartArgs :=
-						AppendEntriesArgs{rf.currentTerm, rf.me, 0, 0, 0, nil}
 					heartReply := AppendEntriesReply{}
 					ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
 					// If RPC request or response contains term T > currentTerm:
@@ -515,8 +577,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
-	rf.logs = make([]LogEntry, 0)
-
+	rf.logs = append(rf.logs, LogEntry{Index: 0, Term: 0})
 	rf.applyCh = applyCh
 
 	//When servers start up, they begin as followers
