@@ -52,6 +52,12 @@ const (
 	LEADER
 )
 
+type LogEntry struct {
+	Term    int
+	Index   int
+	Command interface{}
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -68,7 +74,7 @@ type Raft struct {
 
 	currentTerm int
 	votedFor    int
-	logs        interface{}
+	logs        []LogEntry
 
 	commitIndex int
 	lastApplied int
@@ -183,11 +189,41 @@ func (rf *Raft) TransToFollower(term int) {
 	rf.meState = FOLLOWER
 	rf.lastContactTime = time.Now()
 	rf.currentTerm = term
+	rf.checkStatus()
+}
+
+func (rf *Raft) TransToLeader() {
+	rf.mu.Lock()
+	rf.meState = LEADER
+	for id := range rf.nextIndex {
+		rf.nextIndex[id] = rf.LastLogIndex() + 1
+	}
+	for id := range rf.matchIndex {
+		rf.matchIndex[id] = 0
+	}
+	rf.sendHeartBeat()
+	rf.mu.Unlock()
+}
+
+func (rf *Raft) GetLastLogEntry() LogEntry {
+	return rf.logs[len(rf.logs)-1]
+}
+
+func (rf *Raft) LastLogIndex() int {
+	if len(rf.logs) >= 1 {
+		return rf.logs[len(rf.logs)-1].Index
+	} else {
+		return -1
+	}
 }
 
 type AppendEntriesArgs struct {
-	Term     int
-	LeaderID int
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	LeaderCommit int
+	Entries      []LogEntry
 }
 
 type AppendEntriesReply struct {
@@ -277,7 +313,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 				continue
 			}
 			go func(id int) {
-				logArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
+				logArgs := AppendEntriesArgs{rf.currentTerm, rf.me, 0, 0, 0, make([]LogEntry, 0)}
 				logReply := AppendEntriesReply{}
 				ok := rf.sendAppendEntries(id, &logArgs, &logReply)
 				// If RPC request or response contains term T > currentTerm:
@@ -336,7 +372,7 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) checkStatus() {
 	go func() {
 		for true {
-			if rf.killed() {
+			if rf.killed() || rf.meState == LEADER {
 				break
 			}
 			//random time out
@@ -344,7 +380,7 @@ func (rf *Raft) checkStatus() {
 			timeout := time.Duration(ms) * time.Millisecond
 			time.Sleep(timeout)
 			diff := time.Now().Sub(rf.lastContactTime)
-			if rf.meState != LEADER && diff >= timeout {
+			if diff >= timeout {
 				DPrintf("id(%v) with state(%v) start kickoff at term: %v\n",
 					rf.me, rf.meState, rf.currentTerm)
 				rf.kickOffElection()
@@ -356,19 +392,20 @@ func (rf *Raft) checkStatus() {
 func (rf *Raft) sendHeartBeat() {
 	go func() {
 		for true {
-			timeout := time.Duration(50 * time.Millisecond)
-			time.Sleep(timeout)
 
 			if rf.killed() || rf.meState != LEADER {
 				break
 			}
 
+			timeout := time.Duration(50 * time.Millisecond)
+			time.Sleep(timeout)
 			for id := range rf.peers {
 				if id == rf.me {
 					continue
 				}
 				go func(id int) {
-					heartArgs := AppendEntriesArgs{rf.currentTerm, rf.me}
+					heartArgs :=
+						AppendEntriesArgs{rf.currentTerm, rf.me, 0, 0, 0, nil}
 					heartReply := AppendEntriesReply{}
 					ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
 					// If RPC request or response contains term T > currentTerm:
@@ -391,7 +428,6 @@ func (rf *Raft) kickOffElection() {
 		if rf.killed() {
 			break
 		}
-
 		rf.mu.Lock()
 		rf.meState = CANDIDATE
 		rf.votedFor = -1
@@ -441,10 +477,8 @@ func (rf *Raft) kickOffElection() {
 		DPrintf("id: %v@%v granted:%v sended:%v\n", rf.me, rf.currentTerm, granted, sended)
 		if sended > 0 && (granted > sended/2) {
 			DPrintf("%v@%v become LEADER ....\n", rf.me, rf.currentTerm)
-			rf.mu.Lock()
-			rf.meState = LEADER
-			rf.sendHeartBeat()
-			rf.mu.Unlock()
+			rf.TransToLeader()
+
 			return
 		}
 		if rf.meState == FOLLOWER {
@@ -481,6 +515,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
+	rf.logs = make([]LogEntry, 0)
 
 	rf.applyCh = applyCh
 
@@ -488,7 +523,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.meState = FOLLOWER
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	rf.checkStatus()
-	rf.sendHeartBeat()
+	rf.TransToFollower(0)
 	return rf
 }
