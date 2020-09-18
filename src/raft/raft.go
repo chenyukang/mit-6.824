@@ -203,7 +203,7 @@ func (rf *Raft) TransToFollower(term int) {
 	rf.meState = FOLLOWER
 	rf.lastContactTime = time.Now()
 	rf.currentTerm = term
-	rf.checkStatus()
+	go rf.checkStatus()
 }
 
 func (rf *Raft) TransToLeader() {
@@ -216,7 +216,7 @@ func (rf *Raft) TransToLeader() {
 	for id := range rf.matchIndex {
 		rf.matchIndex[id] = 0
 	}
-	rf.sendHeartBeat()
+	go rf.sendHeartBeat()
 	rf.mu.Unlock()
 }
 
@@ -232,6 +232,19 @@ func (rf *Raft) LastLogIndex() int {
 	return rf.logs[len(rf.logs)-1].Index
 }
 
+func (rf *Raft) TryApply() {
+	if rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
+		logEntry := rf.logs[rf.lastApplied]
+		applyMsg := ApplyMsg{
+			CommandValid: true,
+			Command:      logEntry.Command,
+			CommandIndex: logEntry.Index,
+		}
+		rf.applyCh <- applyMsg
+	}
+}
+
 // Invoked by leader to replicate log entries
 // also used as heartbeat (§5.2).
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -245,29 +258,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	rf.TransToFollower(args.Term)
+	rf.TryApply()
 
-	if rf.commitIndex > rf.lastApplied {
-		rf.lastApplied++
-		logEntry := rf.logs[rf.lastApplied]
-		applyMsg := ApplyMsg{
-			CommandValid: true,
-			Command:      logEntry.Command,
-			CommandIndex: logEntry.Index,
-		}
-		rf.applyCh <- applyMsg
-	}
+	prevLog := rf.GetLogEntry(args.PrevLogIndex)
 
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
-
 	if len(rf.logs) <= args.PrevLogIndex {
+		// leader will retry next time
+		rf.logs = rf.logs[:prevLog.Index]
 		return
 	}
 
 	// If an existing entry conflicts with a new one
 	// (same index but different terms), delete the existing entry
 	// and all that follow it (§5.3)
-	prevLog := rf.GetLogEntry(args.PrevLogIndex)
 	if prevLog.Index != args.PrevLogIndex || prevLog.Term != args.PrevLogTerm {
 		return
 	}
@@ -349,8 +354,23 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := rf.meState == LEADER
 	term := rf.currentTerm
 	index := rf.commitIndex
+
+	lastEntry := rf.GetLastLogEntry()
+	lastIndex := lastEntry.Index
+	newEntry := LogEntry{
+		Command: command,
+		Term:    rf.currentTerm,
+		Index:   lastIndex + 1,
+	}
+	rf.logs = append(rf.logs, newEntry)
+	go rf.TryAgreement(command, index+1)
 	rf.mu.Unlock()
-	if isLeader {
+	return index, term, isLeader
+}
+
+func (rf *Raft) TryAgreement(command interface{}, index int) {
+	for {
+		return
 		number := len(rf.peers) - 1
 		results := make(chan int, number)
 		//log := LogEntry{rf.currentTerm, rf.LastLogIndex() + 1, command}
@@ -393,12 +413,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.mu.Lock()
 			rf.commitIndex++
 			rf.mu.Unlock()
-			return rf.commitIndex, rf.currentTerm, true
-		} else {
-			return rf.commitIndex, rf.currentTerm, false
+			return
 		}
-	} else {
-		return index, term, isLeader
 	}
 }
 
@@ -424,69 +440,65 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) checkStatus() {
-	go func() {
-		for true {
-			if rf.killed() || rf.meState == LEADER {
-				break
-			}
-			//random time out
-			ms := 800 + rand.Intn(200)
-			timeout := time.Duration(ms) * time.Millisecond
-			time.Sleep(timeout)
-			diff := time.Now().Sub(rf.lastContactTime)
-			if diff >= timeout {
-				DPrintf("id(%v) with state(%v) start kickoff at term: %v\n",
-					rf.me, rf.meState, rf.currentTerm)
-				rf.kickOffElection()
-			}
+	for {
+		if rf.killed() || rf.meState == LEADER {
+			break
 		}
-	}()
+		//random time out
+		ms := 800 + rand.Intn(200)
+		timeout := time.Duration(ms) * time.Millisecond
+		time.Sleep(timeout)
+		diff := time.Now().Sub(rf.lastContactTime)
+		if diff >= timeout {
+			DPrintf("id(%v) with state(%v) start kickoff at term: %v\n",
+				rf.me, rf.meState, rf.currentTerm)
+			rf.kickOffElection()
+		}
+	}
 }
 
 func (rf *Raft) sendHeartBeat() {
-	go func() {
-		for true {
+	for {
 
-			if rf.killed() || rf.meState != LEADER {
-				break
-			}
-
-			timeout := time.Duration(50 * time.Millisecond)
-			time.Sleep(timeout)
-
-			lastLogEntry := rf.GetLastLogEntry()
-			heartArgs := AppendEntriesArgs{
-				rf.currentTerm,
-				rf.me,
-				lastLogEntry.Index,
-				lastLogEntry.Term,
-				rf.commitIndex,
-				[]LogEntry{}}
-
-			for id := range rf.peers {
-				if id == rf.me {
-					continue
-				}
-				go func(id int) {
-					heartReply := AppendEntriesReply{}
-					ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
-					// If RPC request or response contains term T > currentTerm:
-					// set currentTerm = T, convert to follower (§5.1)
-					if ok {
-						rf.mu.Lock()
-						if heartReply.Term > rf.currentTerm {
-							rf.TransToFollower(heartReply.Term)
-						}
-						rf.mu.Unlock()
-					}
-				}(id)
-			}
+		if rf.killed() || rf.meState != LEADER {
+			break
 		}
-	}()
+
+		timeout := time.Duration(50 * time.Millisecond)
+		time.Sleep(timeout)
+
+		lastLogEntry := rf.GetLastLogEntry()
+		heartArgs := AppendEntriesArgs{
+			rf.currentTerm,
+			rf.me,
+			lastLogEntry.Index,
+			lastLogEntry.Term,
+			rf.commitIndex,
+			[]LogEntry{}}
+
+		for id := range rf.peers {
+			if id == rf.me {
+				continue
+			}
+			go func(id int) {
+				heartReply := AppendEntriesReply{}
+				ok := rf.sendAppendEntries(id, &heartArgs, &heartReply)
+				// If RPC request or response contains term T > currentTerm:
+				// set currentTerm = T, convert to follower (§5.1)
+				if ok {
+					rf.mu.Lock()
+					if heartReply.Term > rf.currentTerm {
+						rf.TransToFollower(heartReply.Term)
+					}
+					rf.mu.Unlock()
+				}
+			}(id)
+		}
+	}
 }
 
 func (rf *Raft) kickOffElection() {
-	for true {
+	for {
 		if rf.killed() {
 			break
 		}
@@ -501,13 +513,13 @@ func (rf *Raft) kickOffElection() {
 		ms := 150 + (rand.Int63() % 100)
 		timeout := time.After(time.Duration(ms) * time.Millisecond)
 
+		voteArgs := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
+		voteReply := RequestVoteReply{}
 		for id := range rf.peers {
 			if id == rf.me {
 				continue
 			}
 			go func(id int) {
-				voteArgs := RequestVoteArgs{rf.currentTerm, rf.me, rf.commitIndex, rf.lastApplied}
-				voteReply := RequestVoteReply{}
 				ok := rf.sendRequestVote(id, &voteArgs, &voteReply)
 				if ok {
 					DPrintf("(%v@%v) %v => reply:%v\n", rf.me, rf.currentTerm, id, voteReply)
