@@ -241,6 +241,7 @@ func (rf *Raft) TryApply() {
 			Command:      logEntry.Command,
 			CommandIndex: logEntry.Index,
 		}
+		DPrintf("%v now try to apply ............\n", rf.me)
 		rf.applyCh <- applyMsg
 	}
 }
@@ -351,70 +352,84 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	rf.mu.Lock()
-	isLeader := rf.meState == LEADER
-	term := rf.currentTerm
-	index := rf.commitIndex
-
-	lastEntry := rf.GetLastLogEntry()
-	lastIndex := lastEntry.Index
-	newEntry := LogEntry{
-		Command: command,
-		Term:    rf.currentTerm,
-		Index:   lastIndex + 1,
+	defer rf.mu.Unlock()
+	if rf.meState != LEADER {
+		return -1, -1, false
+	} else {
+		lastEntry := rf.GetLastLogEntry()
+		index := lastEntry.Index + 1
+		newEntry := LogEntry{
+			Command: command,
+			Term:    rf.currentTerm,
+			Index:   index,
+		}
+		rf.logs = append(rf.logs, newEntry)
+		DPrintf("begin to agree: %v %v\n", rf.me, index)
+		go rf.TryAgreement(command, index)
+		return index, rf.currentTerm, true
 	}
-	rf.logs = append(rf.logs, newEntry)
-	go rf.TryAgreement(command, index+1)
-	rf.mu.Unlock()
-	return index, term, isLeader
 }
 
 func (rf *Raft) TryAgreement(command interface{}, index int) {
+	number := len(rf.peers) - 1
+	results := make(chan int, number)
+	appended := make([]bool, len(rf.peers))
+	agreed := 0
 	for {
-		return
-		number := len(rf.peers) - 1
-		results := make(chan int, number)
-		//log := LogEntry{rf.currentTerm, rf.LastLogIndex() + 1, command}
-		//rf.logs = append(rf.logs, log)
+		if rf.meState != LEADER || rf.killed() || agreed == len(rf.peers)-1 {
+			return
+		}
 		for id := range rf.peers {
-			if id == rf.me {
+			if id == rf.me || appended[id] {
 				continue
 			}
 			go func(id int) {
-				prevLogIndex := rf.GetLastLogEntry().Index
-				prevLogTerm := rf.GetLastLogEntry().Term
-				entries := make([]LogEntry, 0)
-
-				entries = append(entries, LogEntry{prevLogIndex + 1, rf.currentTerm, command})
+				nextIndex := rf.nextIndex[id]
+				lastLogIndex := rf.GetLastLogEntry().Index
+				prevLog := rf.GetLogEntry(nextIndex - 1)
+				entries := rf.logs[nextIndex:]
 				logArgs := AppendEntriesArgs{rf.currentTerm, rf.me,
-					prevLogIndex, prevLogTerm, rf.commitIndex, entries}
+					prevLog.Index, prevLog.Term, rf.commitIndex, entries}
 				logReply := AppendEntriesReply{}
 
 				ok := rf.sendAppendEntries(id, &logArgs, &logReply)
+				DPrintf("%v agree result: %v\n", id, logReply)
 				// If RPC request or response contains term T > currentTerm:
 				// set currentTerm = T, convert to follower (§5.1)
 				if ok && logReply.Success {
 					if logReply.Term > rf.currentTerm {
 						rf.TransToFollower(logReply.Term)
+						return
+					}
+					if !appended[id] {
+						appended[id] = true
+						DPrintf("%v set appended true", id)
+						rf.nextIndex[id] = MaxInt(rf.nextIndex[id], lastLogIndex+1)
+						rf.matchIndex[id] = MaxInt(rf.matchIndex[id], lastLogIndex)
 					}
 					results <- 1
 				} else {
+					rf.nextIndex[id]--
 					results <- 0
 				}
 			}(id)
 		}
-		agreed := 0
+
 		for i := 0; i < number; i++ {
 			v := <-results
 			if v == 1 {
 				agreed++
 			}
 		}
+		DPrintf("total aggreed: %v\n", agreed)
 		if agreed > (number / 2) {
 			rf.mu.Lock()
-			rf.commitIndex++
+			rf.commitIndex = MaxInt(rf.commitIndex, index)
+			DPrintf("%v now update commitIndex: %v\n", rf.me, rf.commitIndex)
 			rf.mu.Unlock()
 			return
 		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -459,13 +474,14 @@ func (rf *Raft) checkStatus() {
 
 func (rf *Raft) sendHeartBeat() {
 	for {
-
 		if rf.killed() || rf.meState != LEADER {
 			break
 		}
 
 		timeout := time.Duration(50 * time.Millisecond)
 		time.Sleep(timeout)
+
+		rf.TryApply()
 
 		lastLogEntry := rf.GetLastLogEntry()
 		heartArgs := AppendEntriesArgs{

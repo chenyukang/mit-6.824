@@ -370,6 +370,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 		}
 
 		cfg.mu.Lock()
+		//DPrintf("now: %v with len: %v\n", i, len(cfg.logs[i]))
 		cmd1, ok := cfg.logs[i][index]
 		cfg.mu.Unlock()
 
@@ -380,7 +381,11 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 			}
 			count += 1
 			cmd = cmd1
+			DPrintf("now: %v ...........\n", i)
+		} else {
+			//DPrintf("now: %v not ok!!! \n", i)
 		}
+
 	}
 	return count, cmd
 }
