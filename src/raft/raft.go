@@ -261,25 +261,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.TransToFollower(args.Term)
 	rf.TryApply()
 
-	prevLog := rf.GetLogEntry(args.PrevLogIndex)
-
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
 	if len(rf.logs) <= args.PrevLogIndex {
-		// leader will retry next time
-		rf.logs = rf.logs[:prevLog.Index]
+		reply.Success = false
 		return
 	}
+
+	DPrintf("PrevLogIndex: %v  with len: %v\n", args.PrevLogIndex, len(rf.logs))
+	prevLog := rf.GetLogEntry(args.PrevLogIndex)
 
 	// If an existing entry conflicts with a new one
 	// (same index but different terms), delete the existing entry
 	// and all that follow it (§5.3)
 	if prevLog.Index != args.PrevLogIndex || prevLog.Term != args.PrevLogTerm {
+		// leader will retry next time
+		rf.logs = rf.logs[:prevLog.Index]
 		return
 	}
 	pos1 := args.PrevLogIndex + 1
 	pos2 := 0
-	for pos1 < len(rf.logs) && pos2 < len(args.Entries) {
+	for pos1 <= rf.GetLastLogEntry().Index && pos2 < len(args.Entries) {
 		if rf.logs[pos1].Index == args.Entries[pos2].Index &&
 			rf.logs[pos1].Term == args.Entries[pos2].Term {
 			pos1++
@@ -386,17 +388,18 @@ func (rf *Raft) TryAgreement(command interface{}, index int) {
 			go func(id int) {
 				nextIndex := rf.nextIndex[id]
 				lastLogIndex := rf.GetLastLogEntry().Index
+				DPrintf("debug now......: %v %v\n", nextIndex, len(rf.logs))
 				prevLog := rf.GetLogEntry(nextIndex - 1)
 				entries := rf.logs[nextIndex:]
 				logArgs := AppendEntriesArgs{rf.currentTerm, rf.me,
 					prevLog.Index, prevLog.Term, rf.commitIndex, entries}
 				logReply := AppendEntriesReply{}
 
-				ok := rf.sendAppendEntries(id, &logArgs, &logReply)
+				rf.sendAppendEntries(id, &logArgs, &logReply)
 				DPrintf("%v agree result: %v\n", id, logReply)
 				// If RPC request or response contains term T > currentTerm:
 				// set currentTerm = T, convert to follower (§5.1)
-				if ok && logReply.Success {
+				if logReply.Success {
 					if logReply.Term > rf.currentTerm {
 						rf.TransToFollower(logReply.Term)
 						return
@@ -409,7 +412,9 @@ func (rf *Raft) TryAgreement(command interface{}, index int) {
 					}
 					results <- 1
 				} else {
-					rf.nextIndex[id]--
+					if rf.nextIndex[id] > 1 {
+						rf.nextIndex[id]--
+					}
 					results <- 0
 				}
 			}(id)
